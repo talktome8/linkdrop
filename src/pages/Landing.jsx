@@ -233,7 +233,17 @@ export default function Landing() {
   }
 
   async function copyShort() {
-    await navigator.clipboard.writeText(`${APP_URL}/${result.short_code}`)
+    const text = `${APP_URL}/${result.short_code}`
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      const el = document.createElement('textarea')
+      el.value = text
+      document.body.appendChild(el)
+      el.select()
+      document.execCommand('copy')
+      document.body.removeChild(el)
+    }
     setCopied(true)
     setTimeout(() => setCopied(false), 2200)
   }
@@ -254,7 +264,16 @@ export default function Landing() {
       })
     }
 
-    await navigator.clipboard.writeText(waUrl)
+    try {
+      await navigator.clipboard.writeText(waUrl)
+    } catch {
+      const el = document.createElement('textarea')
+      el.value = waUrl
+      document.body.appendChild(el)
+      el.select()
+      document.execCommand('copy')
+      document.body.removeChild(el)
+    }
     setWaCopied(true)
     setTimeout(() => setWaCopied(false), 3000)
   }

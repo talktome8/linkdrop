@@ -91,6 +91,10 @@ const TR = {
     rights: '© 2026 Linkdrop. All rights reserved.',
     invalidUrl: 'Invalid URL — make sure it starts with https://',
     errGeneric: 'Something went wrong — please try again',
+    copyShortLink: 'Copy short link',
+    copyWaLink: 'Copy WA link',
+    redirectsTo: 'This link redirects to',
+    analyticsNudge: 'Want to see clicks and analytics? Create a free account →',
   },
   he: {
     badge: 'קיצור קישורים + אנליטיקס — בחינם',
@@ -126,6 +130,10 @@ const TR = {
     rights: '© 2026 Linkdrop. כל הזכויות שמורות.',
     invalidUrl: 'URL לא תקין — ודאו שמתחיל ב-https://',
     errGeneric: 'שגיאה — נסו שוב',
+    copyShortLink: 'העתק קישור קצר',
+    copyWaLink: 'העתק קישור WA',
+    redirectsTo: 'הקישור מפנה אל',
+    analyticsNudge: 'רוצים לראות קליקים ואנליטיקס? צרו חשבון חינמי ←',
   }
 }
 
@@ -162,6 +170,12 @@ export default function Landing() {
   const [ddOpen, setDdOpen]     = useState(false)
   const [ddSearch, setDdSearch] = useState('')
   const ddRef = useRef(null)
+
+  // WhatsApp custom slug + result state
+  const [waCustomSlug, setWaCustomSlug] = useState('')
+  const [waSlugError, setWaSlugError] = useState('')
+  const [waResult, setWaResult] = useState(null)
+  const [waShortCopied, setWaShortCopied] = useState(false)
 
   // Detect country from timezone
   useEffect(() => {
@@ -251,31 +265,82 @@ export default function Landing() {
   // ── WhatsApp ───────────────────────────────────────────────────────────────
   async function genWA() {
     if (!waPhone.trim()) return
+    setWaSlugError(''); setWaResult(null); setWaCopied(false); setWaShortCopied(false)
+
     const dial  = country.d.replace('+', '')
     const clean = waPhone.replace(/\D/g, '')
     const msg   = waMsg.trim()
     const waUrl = `https://wa.me/${dial}${clean}${msg ? '?text=' + encodeURIComponent(msg) : ''}`
 
-    if (user) {
-      await supabase.from('links').insert({
-        user_id: user.id, original_url: waUrl,
-        short_code: generateCode(), is_whatsapp: true,
-        wa_phone: dial + clean, wa_message: msg || null,
-      })
+    // Validate custom slug
+    const slug = waCustomSlug.trim().toLowerCase().replace(/\s+/g, '-')
+    if (slug && !/^[a-z0-9-]+$/.test(slug)) {
+      setWaSlugError(t.customInvalid); return
     }
 
-    try {
-      await navigator.clipboard.writeText(waUrl)
-    } catch {
+    const short_code = slug || generateCode()
+
+    // Check if custom slug already taken
+    if (slug) {
+      const { data: existing } = await supabase
+        .from('links').select('id').eq('short_code', slug).single()
+      if (existing) { setWaSlugError(t.customTaken); return }
+    }
+
+    const { data, error } = await supabase.from('links').insert({
+      user_id: user?.id ?? null, original_url: waUrl,
+      short_code, is_whatsapp: true,
+      wa_phone: dial + clean, wa_message: msg || null,
+    }).select().single()
+
+    let resultData = null
+    if (error) {
+      if (slug) { setWaSlugError(t.customTaken); return }
+      const { data: d2, error: e2 } = await supabase.from('links').insert({
+        user_id: user?.id ?? null, original_url: waUrl,
+        short_code: generateCode(7), is_whatsapp: true,
+        wa_phone: dial + clean, wa_message: msg || null,
+      }).select().single()
+      if (e2) return
+      resultData = d2
+    } else {
+      resultData = data
+    }
+    setWaResult(resultData)
+
+    // Auto-copy WA URL
+    try { await navigator.clipboard.writeText(waUrl) } catch {
       const el = document.createElement('textarea')
-      el.value = waUrl
-      document.body.appendChild(el)
-      el.select()
-      document.execCommand('copy')
+      el.value = waUrl; document.body.appendChild(el)
+      el.select(); document.execCommand('copy')
       document.body.removeChild(el)
     }
     setWaCopied(true)
     setTimeout(() => setWaCopied(false), 3000)
+  }
+
+  async function copyWaShort() {
+    const text = `${APP_URL}/${waResult.short_code}`
+    try { await navigator.clipboard.writeText(text) } catch {
+      const el = document.createElement('textarea')
+      el.value = text; document.body.appendChild(el)
+      el.select(); document.execCommand('copy')
+      document.body.removeChild(el)
+    }
+    setWaShortCopied(true)
+    setTimeout(() => setWaShortCopied(false), 2200)
+  }
+
+  async function copyWaFull() {
+    const text = waResult.original_url
+    try { await navigator.clipboard.writeText(text) } catch {
+      const el = document.createElement('textarea')
+      el.value = text; document.body.appendChild(el)
+      el.select(); document.execCommand('copy')
+      document.body.removeChild(el)
+    }
+    setWaCopied(true)
+    setTimeout(() => setWaCopied(false), 2200)
   }
 
   // ── Phone preview ──────────────────────────────────────────────────────────
@@ -291,6 +356,11 @@ export default function Landing() {
   const slugPreview = customSlug.trim()
     ? `${APP_URL}/${customSlug.trim().toLowerCase().replace(/\s+/g,'-')}`
     : ''
+
+  const waSlugPreview = waCustomSlug.trim()
+    ? `${APP_URL}/${waCustomSlug.trim().toLowerCase().replace(/\s+/g,'-')}`
+    : ''
+  const waShortUrl = waResult ? `${APP_URL}/${waResult.short_code}` : ''
 
   return (
     <div className="min-h-screen bg-white font-body" dir={dir}>
@@ -383,27 +453,33 @@ export default function Landing() {
 
           {/* Result */}
           {result && (
-            <div className="bg-blue-50 border border-blue-100 rounded-2xl px-4 py-3 flex items-center justify-between gap-3 mb-3 animate-fade-up">
-              <div>
-                <p className="text-xs text-gray-400 mb-0.5">{t.yourLink}</p>
-                <a href={shortUrl} target="_blank" rel="noreferrer" dir="ltr"
-                  className="font-sora font-semibold text-drop hover:underline text-sm break-all">
-                  {shortUrl}
-                </a>
+            <div className="bg-blue-50 border border-blue-100 rounded-2xl px-4 py-3 mb-3 animate-fade-up">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs text-gray-400 mb-0.5">{t.yourLink}</p>
+                  <a href={shortUrl} target="_blank" rel="noreferrer" dir="ltr"
+                    className="font-sora font-semibold text-drop hover:underline text-sm break-all">
+                    {shortUrl}
+                  </a>
+                </div>
+                <button onClick={copyShort}
+                  className={`flex-shrink-0 text-sm font-semibold px-4 py-2 rounded-xl transition
+                    ${copied ? 'bg-green-500 text-white' : 'bg-drop text-white hover:bg-blue-700'}`}>
+                  {copied ? t.copied : t.copyShortLink}
+                </button>
               </div>
-              <button onClick={copyShort}
-                className={`flex-shrink-0 text-sm font-semibold px-4 py-2 rounded-xl transition
-                  ${copied ? 'bg-green-500 text-white' : 'bg-drop text-white hover:bg-blue-700'}`}>
-                {copied ? t.copied : t.copy}
-              </button>
+              <p className="text-xs text-gray-400 mt-2" dir="ltr">
+                {t.redirectsTo} <span className="break-all">{result.original_url}</span>
+              </p>
             </div>
           )}
 
-          {!user && (
-            <p className="text-xs text-gray-400 mb-6">
-              <a href="/auth" className="text-drop font-medium hover:underline">{t.hintA}</a>
-              {t.hintB}
-            </p>
+          {result && !user && (
+            <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-2.5 mb-3 animate-fade-up">
+              <a href="/auth" className="text-sm text-amber-700 font-semibold hover:underline">
+                {t.analyticsNudge}
+              </a>
+            </div>
           )}
 
           {/* OR */}
@@ -466,15 +542,68 @@ export default function Landing() {
             placeholder={t.waMsgPh} rows={2}
             className="w-full border-2 border-gray-100 rounded-2xl px-4 py-2.5 text-sm outline-none focus:border-green-400 transition resize-none text-ink placeholder-gray-300 mb-2" />
 
+          {/* WA Custom slug */}
+          <div className="mb-3">
+            <label className="text-xs text-gray-400 mb-1 block">{t.customLabel}</label>
+            <div className={`flex items-center bg-white border-2 rounded-xl px-3 py-2 gap-1 transition
+              ${waSlugError ? 'border-red-300' : 'border-gray-100 focus-within:border-green-400'}`}>
+              <span className="text-xs text-gray-400 font-mono whitespace-nowrap flex-shrink-0" dir="ltr">
+                {APP_URL}/
+              </span>
+              <input type="text" value={waCustomSlug}
+                onChange={e => { setWaCustomSlug(e.target.value); setWaSlugError('') }}
+                placeholder={t.customPh} dir="ltr"
+                className="flex-1 outline-none text-sm bg-transparent text-ink font-mono placeholder-gray-300 min-w-0" />
+            </div>
+            {waSlugError
+              ? <p className="text-red-500 text-xs mt-1">{waSlugError}</p>
+              : waSlugPreview
+                ? <p className="text-xs text-green-600 mt-1 font-mono" dir="ltr">{waSlugPreview}</p>
+                : <p className="text-xs text-gray-300 mt-1">{t.customNote}</p>
+            }
+          </div>
+
           <button onClick={genWA} disabled={!waPhone.trim()}
             className="w-full bg-green-500 text-white font-sora font-bold text-sm py-3.5 rounded-2xl hover:bg-green-600 active:scale-95 transition disabled:opacity-40 flex items-center justify-center gap-2">
             <WAIcon />
             {t.waGenBtn}
           </button>
 
-          {waCopied && (
-            <div className="bg-green-50 border border-green-100 rounded-xl px-4 py-2.5 text-green-700 text-sm font-semibold text-center mt-2 animate-fade-up">
-              {t.waCopied}
+          {/* WA Result */}
+          {waResult && (
+            <div className="bg-green-50 border border-green-100 rounded-2xl px-4 py-3 mt-2 animate-fade-up">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <div>
+                  <p className="text-xs text-gray-400 mb-0.5">{t.yourLink}</p>
+                  <a href={waShortUrl} target="_blank" rel="noreferrer" dir="ltr"
+                    className="font-sora font-semibold text-green-700 hover:underline text-sm break-all">
+                    {waShortUrl}
+                  </a>
+                </div>
+                <button onClick={copyWaShort}
+                  className={`flex-shrink-0 text-sm font-semibold px-4 py-2 rounded-xl transition
+                    ${waShortCopied ? 'bg-green-700 text-white' : 'bg-green-500 text-white hover:bg-green-600'}`}>
+                  {waShortCopied ? t.copied : t.copyShortLink}
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={copyWaFull}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition
+                    ${waCopied ? 'bg-green-700 text-white' : 'bg-white text-green-700 border border-green-200 hover:bg-green-100'}`}>
+                  {waCopied ? t.copied : t.copyWaLink}
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 mt-2" dir="ltr">
+                {t.redirectsTo} <span className="break-all">{waResult.original_url}</span>
+              </p>
+            </div>
+          )}
+
+          {waResult && !user && (
+            <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-2.5 mt-2 animate-fade-up">
+              <a href="/auth" className="text-sm text-amber-700 font-semibold hover:underline">
+                {t.analyticsNudge}
+              </a>
             </div>
           )}
         </div>

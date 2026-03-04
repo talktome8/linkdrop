@@ -91,6 +91,7 @@ const TR = {
     rights: '© 2026 Linkdrop. All rights reserved.',
     invalidUrl: 'Invalid URL — make sure it starts with https://',
     errGeneric: 'Something went wrong — please try again',
+    rateLimited: 'You\'ve created 5 links this hour. Sign up for unlimited \u2192',
     copyShortLink: 'Copy short link',
     copyWaLink: 'Copy WA link',
     redirectsTo: 'This link redirects to',
@@ -130,11 +131,37 @@ const TR = {
     rights: '© 2026 Linkdrop. כל הזכויות שמורות.',
     invalidUrl: 'URL לא תקין — ודאו שמתחיל ב-https://',
     errGeneric: 'שגיאה — נסו שוב',
+    rateLimited: 'יצרתם 5 קישורים בשעה האחרונה. הירשמו לשימוש ללא הגבלה \u2190',
     copyShortLink: 'העתק קישור קצר',
     copyWaLink: 'העתק קישור WA',
     redirectsTo: 'הקישור מפנה אל',
     analyticsNudge: 'רוצים לראות קליקים ואנליטיקס? צרו חשבון חינמי ←',
   }
+}
+
+// ── Rate limiting helpers ─────────────────────────────────────────────────────
+const RATE_KEY = 'ld_creates'
+const RATE_MAX = 5
+const RATE_WINDOW = 60 * 60 * 1000 // 1 hour in ms
+
+function getRateTimestamps() {
+  try {
+    const raw = sessionStorage.getItem(RATE_KEY)
+    if (!raw) return []
+    const stamps = JSON.parse(raw)
+    const cutoff = Date.now() - RATE_WINDOW
+    return stamps.filter(ts => ts > cutoff)
+  } catch { return [] }
+}
+
+function recordCreate() {
+  const stamps = getRateTimestamps()
+  stamps.push(Date.now())
+  sessionStorage.setItem(RATE_KEY, JSON.stringify(stamps))
+}
+
+function isRateLimited() {
+  return getRateTimestamps().length >= RATE_MAX
 }
 
 function generateCode(len = 6) {
@@ -152,6 +179,9 @@ export default function Landing() {
   const [lang, setLang] = useState('en')
   const t   = TR[lang]
   const dir = lang === 'he' ? 'rtl' : 'ltr'
+
+  // Rate limit state
+  const [rateLimitMsg, setRateLimitMsg] = useState('')
 
   // URL shortener state
   const [url, setUrl]           = useState('')
@@ -203,7 +233,14 @@ export default function Landing() {
   // ── Shorten URL ────────────────────────────────────────────────────────────
   async function shorten() {
     if (!url.trim()) return
-    setLoading(true); setUrlError(''); setSlugError(''); setResult(null)
+    setLoading(true); setUrlError(''); setSlugError(''); setResult(null); setRateLimitMsg('')
+
+    // Rate limit for anonymous users
+    if (!user && isRateLimited()) {
+      setRateLimitMsg(t.rateLimited)
+      setLoading(false)
+      return
+    }
 
     try { new URL(url) } catch {
       setUrlError(t.invalidUrl); setLoading(false); return
@@ -239,8 +276,10 @@ export default function Landing() {
         .insert({ original_url: url.trim(), short_code: generateCode(7), user_id: user?.id ?? null, is_whatsapp: false })
         .select().single()
       if (e2) { setUrlError(t.errGeneric); setLoading(false); return }
+      if (!user) recordCreate()
       setResult(d2)
     } else {
+      if (!user) recordCreate()
       setResult(data)
     }
     setLoading(false)
@@ -265,7 +304,13 @@ export default function Landing() {
   // ── WhatsApp ───────────────────────────────────────────────────────────────
   async function genWA() {
     if (!waPhone.trim()) return
-    setWaSlugError(''); setWaResult(null); setWaCopied(false); setWaShortCopied(false)
+    setWaSlugError(''); setWaResult(null); setWaCopied(false); setWaShortCopied(false); setRateLimitMsg('')
+
+    // Rate limit for anonymous users
+    if (!user && isRateLimited()) {
+      setRateLimitMsg(t.rateLimited)
+      return
+    }
 
     const dial  = country.d.replace('+', '')
     const clean = waPhone.replace(/\D/g, '')
@@ -302,8 +347,10 @@ export default function Landing() {
         wa_phone: dial + clean, wa_message: msg || null,
       }).select().single()
       if (e2) return
+      if (!user) recordCreate()
       resultData = d2
     } else {
+      if (!user) recordCreate()
       resultData = data
     }
     setWaResult(resultData)
@@ -429,6 +476,15 @@ export default function Landing() {
           </div>
 
           {urlError && <p className="text-red-500 text-xs mb-2">{urlError}</p>}
+
+          {/* Rate limit warning */}
+          {rateLimitMsg && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 mb-2 animate-fade-up">
+              <a href="/auth" className="text-sm text-amber-700 font-semibold hover:underline">
+                {rateLimitMsg}
+              </a>
+            </div>
+          )}
 
           {/* Custom slug */}
           <div className="mb-3">

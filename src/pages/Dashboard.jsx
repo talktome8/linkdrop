@@ -12,6 +12,17 @@ function generateCode(len = 6) {
   return Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
 }
 
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const el = document.createElement('textarea')
+    el.value = text; document.body.appendChild(el)
+    el.select(); document.execCommand('copy')
+    document.body.removeChild(el)
+  }
+}
+
 export default function Dashboard() {
   const { user, signOut } = useAuth()
   const navigate = useNavigate()
@@ -22,6 +33,9 @@ export default function Dashboard() {
   const [creating, setCreating]   = useState(false)
   const [newUrl, setNewUrl]       = useState('')
   const [newTitle, setNewTitle]   = useState('')
+  const [customSlug, setCustomSlug] = useState('')
+  const [slugError, setSlugError]   = useState(null)
+  const [createdShort, setCreatedShort] = useState(null)
   const [tab, setTab]             = useState('links')  // 'links' | 'whatsapp'
   const [qrLink, setQrLink]       = useState(null)
   const [waModal, setWaModal]     = useState(false)
@@ -60,15 +74,34 @@ export default function Dashboard() {
     setLoading(false)
   }
 
+  async function checkSlugAvailable(slug) {
+    if (!slug) return true
+    const { data } = await supabase.from('links').select('id').eq('short_code', slug).maybeSingle()
+    return !data
+  }
+
   async function createLink() {
     if (!newUrl.trim()) return
-    setCreating(true); setError(null)
+    setCreating(true); setError(null); setSlugError(null); setCreatedShort(null)
 
     try { new URL(newUrl) } catch {
       setError('URL לא תקין'); setCreating(false); return
     }
 
-    let code = generateCode()
+    let code
+    if (customSlug.trim()) {
+      if (!/^[a-zA-Z0-9-]+$/.test(customSlug.trim())) {
+        setSlugError('רק אותיות, מספרים ומקפים מותרים'); setCreating(false); return
+      }
+      const available = await checkSlugAvailable(customSlug.trim())
+      if (!available) {
+        setSlugError('השם הזה כבר תפוס — נסו אחר'); setCreating(false); return
+      }
+      code = customSlug.trim()
+    } else {
+      code = generateCode()
+    }
+
     const { error: insertErr } = await supabase.from('links').insert({
       user_id: user.id,
       original_url: newUrl.trim(),
@@ -78,6 +111,9 @@ export default function Dashboard() {
     })
 
     if (insertErr) {
+      if (customSlug.trim()) {
+        setSlugError('השם הזה כבר תפוס — נסו אחר'); setCreating(false); return
+      }
       code = generateCode(7)
       const { error: err2 } = await supabase.from('links').insert({
         user_id: user.id, original_url: newUrl.trim(),
@@ -86,7 +122,9 @@ export default function Dashboard() {
       if (err2) { setError('שגיאה — נסו שוב'); setCreating(false); return }
     }
 
-    setNewUrl(''); setNewTitle('')
+    const shortUrl = `${APP_URL}/${code}`
+    setCreatedShort(shortUrl)
+    setNewUrl(''); setNewTitle(''); setCustomSlug('')
     fetchLinks()
     setCreating(false)
   }
@@ -98,7 +136,7 @@ export default function Dashboard() {
   }
 
   async function copy(text, id) {
-    await navigator.clipboard.writeText(text)
+    await copyToClipboard(text)
     setCopiedId(id)
     setTimeout(() => setCopiedId(null), 2000)
   }
@@ -166,7 +204,34 @@ export default function Dashboard() {
               {creating ? '…' : '+ קצר'}
             </button>
           </div>
+
+          {/* Custom slug field */}
+          <div className="mt-3">
+            <input type="text" value={customSlug}
+              onChange={e => { setCustomSlug(e.target.value.replace(/[^a-zA-Z0-9-]/g, '')); setSlugError(null) }}
+              placeholder="שם מותאם אישית (אופציונלי) — אותיות, מספרים ומקפים"
+              dir="ltr"
+              className="border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-drop w-full transition" />
+            {customSlug && (
+              <p dir="ltr" className="text-xs text-gray-400 mt-1">
+                תצוגה מקדימה: <span className="font-mono text-drop">linkdrop.raztom.com/{customSlug}</span>
+              </p>
+            )}
+            {slugError && <p className="text-red-500 text-xs mt-1">{slugError}</p>}
+          </div>
+
           {error && <p className="text-red-500 text-xs mt-2">{error}</p>}
+
+          {/* Created link result */}
+          {createdShort && (
+            <div className="mt-3 flex items-center gap-2 bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+              <p dir="ltr" className="flex-1 text-sm font-mono text-green-700 truncate">{createdShort}</p>
+              <button onClick={async () => { await copyToClipboard(createdShort); setCopiedId('created'); setTimeout(() => setCopiedId(null), 2000) }}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition ${copiedId === 'created' ? 'bg-green-500 text-white' : 'bg-white text-green-600 border border-green-200 hover:bg-green-100'}`}>
+                {copiedId === 'created' ? '✓ הועתק' : 'העתק'}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Links list */}

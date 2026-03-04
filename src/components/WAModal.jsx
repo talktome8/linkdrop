@@ -1,15 +1,32 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 
+const APP_URL = import.meta.env.VITE_APP_URL || window.location.origin
+
 function generateCode(len = 6) {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
   return Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
+}
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const el = document.createElement('textarea')
+    el.value = text; document.body.appendChild(el)
+    el.select(); document.execCommand('copy')
+    document.body.removeChild(el)
+  }
 }
 
 export default function WAModal({ userId, onClose, onCreated }) {
   const [phone, setPhone]     = useState('')
   const [message, setMessage] = useState('')
   const [title, setTitle]     = useState('')
+  const [customSlug, setCustomSlug] = useState('')
+  const [slugError, setSlugError]   = useState(null)
+  const [createdShort, setCreatedShort] = useState(null)
+  const [copied, setCopied]   = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState(null)
 
@@ -17,8 +34,21 @@ export default function WAModal({ userId, onClose, onCreated }) {
     const cleanPhone = phone.replace(/\D/g, '')
     if (!cleanPhone) { setError('הכניסו מספר טלפון'); return }
 
-    setLoading(true); setError(null)
-    const code = generateCode()
+    setLoading(true); setError(null); setSlugError(null); setCreatedShort(null)
+
+    let code
+    if (customSlug.trim()) {
+      if (!/^[a-zA-Z0-9-]+$/.test(customSlug.trim())) {
+        setSlugError('רק אותיות, מספרים ומקפים מותרים'); setLoading(false); return
+      }
+      const { data } = await supabase.from('links').select('id').eq('short_code', customSlug.trim()).maybeSingle()
+      if (data) {
+        setSlugError('השם הזה כבר תפוס — נסו אחר'); setLoading(false); return
+      }
+      code = customSlug.trim()
+    } else {
+      code = generateCode()
+    }
 
     const waUrl = `https://wa.me/${cleanPhone}${message ? `?text=${encodeURIComponent(message)}` : ''}`
 
@@ -32,7 +62,14 @@ export default function WAModal({ userId, onClose, onCreated }) {
       wa_message:   message.trim() || null,
     })
 
-    if (err) { setError('שגיאה — נסו שוב'); setLoading(false); return }
+    if (err) {
+      if (customSlug.trim()) {
+        setSlugError('השם הזה כבר תפוס — נסו אחר'); setLoading(false); return
+      }
+      setError('שגיאה — נסו שוב'); setLoading(false); return
+    }
+
+    setCreatedShort(`${APP_URL}/${code}`)
     onCreated()
   }
 
@@ -76,6 +113,21 @@ export default function WAModal({ userId, onClose, onCreated }) {
               className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-green-400 transition" />
           </div>
 
+          <div>
+            <label className="text-xs text-gray-400 mb-1 block">שם מותאם אישית (אופציונלי) — אותיות, מספרים ומקפים</label>
+            <input type="text" value={customSlug}
+              onChange={e => { setCustomSlug(e.target.value.replace(/[^a-zA-Z0-9-]/g, '')); setSlugError(null) }}
+              placeholder="my-link"
+              dir="ltr"
+              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-green-400 transition" />
+            {customSlug && (
+              <p dir="ltr" className="text-xs text-gray-400 mt-1">
+                תצוגה מקדימה: <span className="font-mono text-green-600">linkdrop.raztom.com/{customSlug}</span>
+              </p>
+            )}
+            {slugError && <p className="text-red-500 text-xs mt-1">{slugError}</p>}
+          </div>
+
           {preview && (
             <div className="bg-green-50 border border-green-100 rounded-xl px-4 py-3">
               <p className="text-xs text-green-600 mb-0.5">תצוגה מקדימה של ה-URL</p>
@@ -84,6 +136,17 @@ export default function WAModal({ userId, onClose, onCreated }) {
           )}
 
           {error && <p className="text-red-500 text-xs">{error}</p>}
+
+          {/* Created link result */}
+          {createdShort && (
+            <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+              <p dir="ltr" className="flex-1 text-sm font-mono text-green-700 truncate">{createdShort}</p>
+              <button onClick={async () => { await copyToClipboard(createdShort); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition ${copied ? 'bg-green-500 text-white' : 'bg-white text-green-600 border border-green-200 hover:bg-green-100'}`}>
+                {copied ? '✓ הועתק' : 'העתק'}
+              </button>
+            </div>
+          )}
 
           <button onClick={create} disabled={loading || !phone}
             className="bg-green-500 text-white font-sora font-semibold text-sm py-3 rounded-xl hover:bg-green-600 transition disabled:opacity-50 mt-1">

@@ -4,6 +4,7 @@ import Landing   from './pages/Landing'
 import Auth      from './pages/Auth'
 import Dashboard from './pages/Dashboard'
 import Redirect  from './pages/Redirect'
+import NotFound  from './pages/NotFound'
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth()
@@ -30,8 +31,10 @@ export default function App() {
         <Route path="/"          element={<Landing />} />
         <Route path="/auth"      element={<Auth />} />
         <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
-        {/* redirect — must be last */}
+        {/* redirect */}
         <Route path="/:code"     element={<Redirect />} />
+        {/* catch-all 404 */}
+        <Route path="*"           element={<NotFound />} />
       </Routes>
     </BrowserRouter>
   )

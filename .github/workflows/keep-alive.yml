@@ -1,0 +1,16 @@
+name: Keep Supabase Alive
+
+on:
+  schedule:
+    # רץ כל 3 ימים בשעה 00:00
+    - cron: '0 0 */3 * *'
+  workflow_dispatch: # מאפשר לך להפעיל את זה ידנית מתי שבא לך
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase API
+        run: |
+          curl -I "https://jcdwjxtpghjgojfxjwcm.supabase.co/rest/v1/" \
+          -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}"

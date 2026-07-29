@@ -2,15 +2,31 @@ name: Keep Supabase Alive
 
 on:
   schedule:
-    # רץ כל 3 ימים בשעה 00:00
-    - cron: '0 0 */3 * *'
-  workflow_dispatch: # מאפשר לך להפעיל את זה ידנית מתי שבא לך
+    - cron: '17 6 */3 * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/keep-alive.yml]
+
+permissions:
+  contents: read
 
 jobs:
   ping:
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      SUPABASE_URL: https://jcdwjxtpghjgojfxjwcm.supabase.co
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
     steps:
-      - name: Ping Supabase API
+      - name: Verify configuration
+        run: test -n "$SUPABASE_ANON_KEY" || { echo "Missing SUPABASE_ANON_KEY repository secret"; exit 1; }
+
+      - name: Run lightweight database query
         run: |
-          curl -I "https://jcdwjxtpghjgojfxjwcm.supabase.co/rest/v1/" \
-          -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}"
+          curl --fail-with-body --silent --show-error --max-time 30 \
+            --request POST "$SUPABASE_URL/rest/v1/rpc/resolve_link" \
+            --header "apikey: $SUPABASE_ANON_KEY" \
+            --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            --header "Content-Type: application/json" \
+            --data '{"p_short_code":"__keepalive__"}'

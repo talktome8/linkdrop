@@ -1,20 +1,11 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { useAuth } from './hooks/useAuth'
+import { lazy, Suspense } from 'react'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import Landing   from './pages/Landing'
-import Auth      from './pages/Auth'
-import Dashboard from './pages/Dashboard'
-import Redirect  from './pages/Redirect'
-import NotFound  from './pages/NotFound'
 
-function PrivateRoute({ children }) {
-  const { user, loading } = useAuth()
-  if (loading) return (
-    <div className="min-h-screen flex items-center justify-center">
-      <DropSpinner />
-    </div>
-  )
-  return user ? children : <Navigate to="/auth" replace />
-}
+const Auth = lazy(() => import('./pages/Auth'))
+const DashboardRoute = lazy(() => import('./pages/DashboardRoute'))
+const Redirect = lazy(() => import('./pages/Redirect'))
+const NotFound = lazy(() => import('./pages/NotFound'))
 
 function DropSpinner() {
   return (
@@ -29,13 +20,25 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/"          element={<Landing />} />
-        <Route path="/auth"      element={<Auth />} />
-        <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+        <Route path="/auth"      element={<LazyRoute><Auth /></LazyRoute>} />
+        <Route path="/dashboard" element={<LazyRoute><DashboardRoute /></LazyRoute>} />
         {/* redirect */}
-        <Route path="/:code"     element={<Redirect />} />
+        <Route path="/:code"     element={<LazyRoute><Redirect /></LazyRoute>} />
         {/* catch-all 404 */}
-        <Route path="*"           element={<NotFound />} />
+        <Route path="*"           element={<LazyRoute><NotFound /></LazyRoute>} />
       </Routes>
     </BrowserRouter>
+  )
+}
+
+function LazyRoute({ children }) {
+  return <Suspense fallback={<RouteLoader />}>{children}</Suspense>
+}
+
+function RouteLoader() {
+  return (
+    <div className="min-h-screen flex items-center justify-center" aria-label="Loading">
+      <DropSpinner />
+    </div>
   )
 }

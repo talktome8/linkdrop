@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 
 const APP_URL = import.meta.env.VITE_APP_URL || window.location.origin
+const RESERVED_SLUGS = new Set(['auth', 'dashboard', 'privacy', 'terms'])
 
 function generateCode(len = 6) {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
@@ -41,11 +42,11 @@ export default function WAModal({ userId, onClose, onCreated }) {
       if (!/^[a-zA-Z0-9-]+$/.test(customSlug.trim())) {
         setSlugError('רק אותיות, מספרים ומקפים מותרים'); setLoading(false); return
       }
-      const { data } = await supabase.from('links').select('id').eq('short_code', customSlug.trim()).maybeSingle()
-      if (data) {
+      const normalizedSlug = customSlug.trim().toLowerCase()
+      if (RESERVED_SLUGS.has(normalizedSlug)) {
         setSlugError('השם הזה כבר תפוס — נסו אחר'); setLoading(false); return
       }
-      code = customSlug.trim()
+      code = normalizedSlug
     } else {
       code = generateCode()
     }
@@ -70,7 +71,12 @@ export default function WAModal({ userId, onClose, onCreated }) {
     }
 
     setCreatedShort(`${APP_URL}/${code}`)
-    onCreated()
+    setPhone('')
+    setMessage('')
+    setTitle('')
+    setCustomSlug('')
+    await onCreated?.()
+    setLoading(false)
   }
 
   const preview = phone.replace(/\D/g, '')
@@ -116,7 +122,7 @@ export default function WAModal({ userId, onClose, onCreated }) {
           <div>
             <label className="text-xs text-gray-400 mb-1 block">שם מותאם אישית (אופציונלי) — אותיות, מספרים ומקפים</label>
             <input type="text" value={customSlug}
-              onChange={e => { setCustomSlug(e.target.value.replace(/[^a-zA-Z0-9-]/g, '')); setSlugError(null) }}
+              onChange={e => { setCustomSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')); setSlugError(null) }}
               placeholder="my-link"
               dir="ltr"
               className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-green-400 transition" />

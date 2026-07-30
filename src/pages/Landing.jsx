@@ -1,7 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
-import { useAuth } from '../hooks/useAuth'
 
 const APP_URL = import.meta.env.VITE_APP_URL || window.location.origin
 
@@ -143,6 +141,7 @@ const TR = {
 const RATE_KEY = 'ld_creates'
 const RATE_MAX = 5
 const RATE_WINDOW = 60 * 60 * 1000 // 1 hour in ms
+const RESERVED_SLUGS = new Set(['auth', 'dashboard', 'privacy', 'terms'])
 
 function getRateTimestamps() {
   try {
@@ -168,13 +167,42 @@ function generateCode(len = 6) {
   return Array.from({ length: len }, () => 'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 36)]).join('')
 }
 
+function normalizeSlug(value) {
+  return value.trim().toLowerCase().replace(/\s+/g, '-')
+}
+
+function isReservedSlug(slug) {
+  return RESERVED_SLUGS.has(slug)
+}
+
+function isValidHttpUrl(value) {
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function getStoredUser() {
+  try {
+    const authKey = Object.keys(localStorage).find(
+      (key) => key.startsWith('sb-') && key.endsWith('-auth-token'),
+    )
+    if (!authKey) return null
+    return JSON.parse(localStorage.getItem(authKey))?.user ?? null
+  } catch {
+    return null
+  }
+}
+
 function escHtml(t) {
   return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function Landing() {
-  const { user } = useAuth()
+  const [user, setUser] = useState(getStoredUser)
   const navigate  = useNavigate()
   const [lang, setLang] = useState('en')
   const t   = TR[lang]
@@ -206,6 +234,7 @@ export default function Landing() {
   const [waSlugError, setWaSlugError] = useState('')
   const [waResult, setWaResult] = useState(null)
   const [waShortCopied, setWaShortCopied] = useState(false)
+  const [waLoading, setWaLoading] = useState(false)
 
   // Detect country from timezone
   useEffect(() => {
@@ -217,6 +246,17 @@ export default function Landing() {
         if (found) setCountry(found)
       }
     } catch (e) {}
+  }, [])
+
+  useEffect(() => {
+    document.documentElement.lang = lang
+    document.documentElement.dir = dir
+  }, [lang, dir])
+
+  useEffect(() => {
+    const syncStoredUser = () => setUser(getStoredUser())
+    window.addEventListener('storage', syncStoredUser)
+    return () => window.removeEventListener('storage', syncStoredUser)
   }, [])
 
   // Close dropdown on outside click
@@ -235,52 +275,49 @@ export default function Landing() {
     if (!url.trim()) return
     setLoading(true); setUrlError(''); setSlugError(''); setResult(null); setRateLimitMsg('')
 
+    const { supabase } = await import('../lib/supabase')
+    const { data: { session } } = await supabase.auth.getSession()
+    const currentUser = session?.user ?? user
+
     // Rate limit for anonymous users
-    if (!user && isRateLimited()) {
+    if (!currentUser && isRateLimited()) {
       setRateLimitMsg(t.rateLimited)
       setLoading(false)
       return
     }
 
-    try { new URL(url) } catch {
+    if (!isValidHttpUrl(url.trim())) {
       setUrlError(t.invalidUrl); setLoading(false); return
     }
 
     // Validate custom slug
-    const slug = customSlug.trim().toLowerCase().replace(/\s+/g, '-')
+    const slug = normalizeSlug(customSlug)
     if (slug && !/^[a-z0-9-]+$/.test(slug)) {
       setSlugError(t.customInvalid); setLoading(false); return
+    }
+    if (isReservedSlug(slug)) {
+      setSlugError(t.customTaken); setLoading(false); return
     }
 
     const short_code = slug || generateCode()
 
-    // Check if custom slug already taken
-    if (slug) {
-      const { data: existing } = await supabase
-        .from('links').select('id').eq('short_code', slug).single()
-      if (existing) {
-        setSlugError(t.customTaken); setLoading(false); return
-      }
-    }
-
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from('links')
-      .insert({ original_url: url.trim(), short_code, user_id: user?.id ?? null, is_whatsapp: false })
-      .select().single()
+      .insert({ original_url: url.trim(), short_code, user_id: currentUser?.id ?? null, is_whatsapp: false })
 
     if (error) {
       // Slug collision fallback
       if (slug) { setSlugError(t.customTaken); setLoading(false); return }
-      const { data: d2, error: e2 } = await supabase
+      const fallbackCode = generateCode(7)
+      const { error: e2 } = await supabase
         .from('links')
-        .insert({ original_url: url.trim(), short_code: generateCode(7), user_id: user?.id ?? null, is_whatsapp: false })
-        .select().single()
+        .insert({ original_url: url.trim(), short_code: fallbackCode, user_id: currentUser?.id ?? null, is_whatsapp: false })
       if (e2) { setUrlError(t.errGeneric); setLoading(false); return }
-      if (!user) recordCreate()
-      setResult(d2)
+      if (!currentUser) recordCreate()
+      setResult({ original_url: url.trim(), short_code: fallbackCode })
     } else {
-      if (!user) recordCreate()
-      setResult(data)
+      if (!currentUser) recordCreate()
+      setResult({ original_url: url.trim(), short_code })
     }
     setLoading(false)
   }
@@ -303,12 +340,18 @@ export default function Landing() {
 
   // ── WhatsApp ───────────────────────────────────────────────────────────────
   async function genWA() {
-    if (!waPhone.trim()) return
+    if (!waPhone.trim() || waLoading) return
     setWaSlugError(''); setWaResult(null); setWaCopied(false); setWaShortCopied(false); setRateLimitMsg('')
+    setWaLoading(true)
+
+    const { supabase } = await import('../lib/supabase')
+    const { data: { session } } = await supabase.auth.getSession()
+    const currentUser = session?.user ?? user
 
     // Rate limit for anonymous users
-    if (!user && isRateLimited()) {
+    if (!currentUser && isRateLimited()) {
       setRateLimitMsg(t.rateLimited)
+      setWaLoading(false)
       return
     }
 
@@ -318,40 +361,37 @@ export default function Landing() {
     const waUrl = `https://wa.me/${dial}${clean}${msg ? '?text=' + encodeURIComponent(msg) : ''}`
 
     // Validate custom slug
-    const slug = waCustomSlug.trim().toLowerCase().replace(/\s+/g, '-')
+    const slug = normalizeSlug(waCustomSlug)
     if (slug && !/^[a-z0-9-]+$/.test(slug)) {
-      setWaSlugError(t.customInvalid); return
+      setWaSlugError(t.customInvalid); setWaLoading(false); return
+    }
+    if (isReservedSlug(slug)) {
+      setWaSlugError(t.customTaken); setWaLoading(false); return
     }
 
     const short_code = slug || generateCode()
 
-    // Check if custom slug already taken
-    if (slug) {
-      const { data: existing } = await supabase
-        .from('links').select('id').eq('short_code', slug).single()
-      if (existing) { setWaSlugError(t.customTaken); return }
-    }
-
-    const { data, error } = await supabase.from('links').insert({
-      user_id: user?.id ?? null, original_url: waUrl,
+    const { error } = await supabase.from('links').insert({
+      user_id: currentUser?.id ?? null, original_url: waUrl,
       short_code, is_whatsapp: true,
       wa_phone: dial + clean, wa_message: msg || null,
-    }).select().single()
+    })
 
     let resultData = null
     if (error) {
-      if (slug) { setWaSlugError(t.customTaken); return }
-      const { data: d2, error: e2 } = await supabase.from('links').insert({
-        user_id: user?.id ?? null, original_url: waUrl,
-        short_code: generateCode(7), is_whatsapp: true,
+      if (slug) { setWaSlugError(t.customTaken); setWaLoading(false); return }
+      const fallbackCode = generateCode(7)
+      const { error: e2 } = await supabase.from('links').insert({
+        user_id: currentUser?.id ?? null, original_url: waUrl,
+        short_code: fallbackCode, is_whatsapp: true,
         wa_phone: dial + clean, wa_message: msg || null,
-      }).select().single()
-      if (e2) return
-      if (!user) recordCreate()
-      resultData = d2
+      })
+      if (e2) { setWaSlugError(t.errGeneric); setWaLoading(false); return }
+      if (!currentUser) recordCreate()
+      resultData = { original_url: waUrl, short_code: fallbackCode }
     } else {
-      if (!user) recordCreate()
-      resultData = data
+      if (!currentUser) recordCreate()
+      resultData = { original_url: waUrl, short_code }
     }
     setWaResult(resultData)
 
@@ -364,6 +404,7 @@ export default function Landing() {
     }
     setWaCopied(true)
     setTimeout(() => setWaCopied(false), 3000)
+    setWaLoading(false)
   }
 
   async function copyWaShort() {
@@ -401,11 +442,11 @@ export default function Landing() {
 
   // Slug preview (show while typing)
   const slugPreview = customSlug.trim()
-    ? `${APP_URL}/${customSlug.trim().toLowerCase().replace(/\s+/g,'-')}`
+    ? `${APP_URL}/${normalizeSlug(customSlug)}`
     : ''
 
   const waSlugPreview = waCustomSlug.trim()
-    ? `${APP_URL}/${waCustomSlug.trim().toLowerCase().replace(/\s+/g,'-')}`
+    ? `${APP_URL}/${normalizeSlug(waCustomSlug)}`
     : ''
   const waShortUrl = waResult ? `${APP_URL}/${waResult.short_code}` : ''
 
@@ -424,7 +465,7 @@ export default function Landing() {
               {['en','he'].map(l => (
                 <button key={l} onClick={() => setLang(l)}
                   className={`px-3 py-1 rounded-full text-xs font-bold font-sora transition
-                    ${lang === l ? 'bg-white shadow text-ink' : 'text-gray-400 hover:text-gray-600'}`}>
+                    ${lang === l ? 'bg-white shadow text-ink' : 'text-gray-600 hover:text-ink'}`}>
                   {l === 'en' ? 'EN' : 'עב'}
                 </button>
               ))}
@@ -446,20 +487,21 @@ export default function Landing() {
         </div>
       </nav>
 
+      <main>
       {/* ── HERO — two columns ── */}
       <div className="max-w-6xl mx-auto px-6 pt-14 pb-12 grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
 
         {/* LEFT */}
         <div>
           {/* Badge */}
-          <div className="inline-flex items-center gap-2 bg-blue-50 text-drop text-xs font-sora font-semibold px-3 py-1.5 rounded-full mb-5">
+          <div className="inline-flex items-center gap-2 bg-blue-50 text-blue-700 text-xs font-sora font-semibold px-3 py-1.5 rounded-full mb-5">
             💧 {t.badge}
           </div>
 
           <h1 className="font-sora font-bold text-5xl leading-tight tracking-tight text-ink mb-4">
             {t.h1a}<br /><span className="text-drop">{t.h1b}</span>
           </h1>
-          <p className="text-gray-400 text-base leading-relaxed mb-8 max-w-md">{t.sub}</p>
+          <p className="text-gray-600 text-base leading-relaxed mb-8 max-w-md">{t.sub}</p>
 
           {/* ── URL Shortener ── */}
           <div className={`flex items-center bg-white border-2 rounded-2xl px-4 py-2 gap-3 shadow-lg shadow-blue-50 transition-all mb-2
@@ -488,10 +530,10 @@ export default function Landing() {
 
           {/* Custom slug */}
           <div className="mb-3">
-            <label className="text-xs text-gray-400 mb-1 block">{t.customLabel}</label>
+            <label className="text-xs text-gray-600 mb-1 block">{t.customLabel}</label>
             <div className={`flex items-center bg-white border-2 rounded-xl px-3 py-2 gap-1 transition
               ${slugError ? 'border-red-300' : 'border-gray-100 focus-within:border-drop'}`}>
-              <span className="text-xs text-gray-400 font-mono whitespace-nowrap flex-shrink-0" dir="ltr">
+              <span className="text-xs text-gray-600 font-mono whitespace-nowrap flex-shrink-0" dir="ltr">
                 {APP_URL}/
               </span>
               <input type="text" value={customSlug}
@@ -503,7 +545,7 @@ export default function Landing() {
               ? <p className="text-red-500 text-xs mt-1">{slugError}</p>
               : slugPreview
                 ? <p className="text-xs text-drop mt-1 font-mono" dir="ltr">{slugPreview}</p>
-                : <p className="text-xs text-gray-300 mt-1">{t.customNote}</p>
+                : <p className="text-xs text-gray-500 mt-1">{t.customNote}</p>
             }
           </div>
 
@@ -512,7 +554,7 @@ export default function Landing() {
             <div className="bg-blue-50 border border-blue-100 rounded-2xl px-4 py-3 mb-3 animate-fade-up">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <p className="text-xs text-gray-400 mb-0.5">{t.yourLink}</p>
+                  <p className="text-xs text-gray-600 mb-0.5">{t.yourLink}</p>
                   <a href={shortUrl} target="_blank" rel="noreferrer" dir="ltr"
                     className="font-sora font-semibold text-drop hover:underline text-sm break-all">
                     {shortUrl}
@@ -524,7 +566,7 @@ export default function Landing() {
                   {copied ? t.copied : t.copyShortLink}
                 </button>
               </div>
-              <p className="text-xs text-gray-400 mt-2" dir="ltr">
+              <p className="text-xs text-gray-600 mt-2" dir="ltr">
                 {t.redirectsTo} <span className="break-all">{result.original_url}</span>
               </p>
             </div>
@@ -539,7 +581,7 @@ export default function Landing() {
           )}
 
           {/* OR */}
-          <div className="flex items-center gap-3 my-5 text-gray-300 text-xs">
+          <div className="flex items-center gap-3 my-5 text-gray-500 text-xs">
             <div className="flex-1 h-px bg-gray-100" />
             <span>{t.or}</span>
             <div className="flex-1 h-px bg-gray-100" />
@@ -548,7 +590,7 @@ export default function Landing() {
           {/* ── WhatsApp ── */}
           <div className="flex items-center gap-2 mb-3">
             <DropSVG size={14} color="#25D366" />
-            <span className="font-sora font-bold text-xs uppercase tracking-wider text-gray-400">{t.waLbl}</span>
+            <span className="font-sora font-bold text-xs uppercase tracking-wider text-gray-600">{t.waLbl}</span>
             <span className="bg-green-100 text-green-700 text-xs font-bold px-2 py-0.5 rounded-full">{t.waPill}</span>
           </div>
 
@@ -561,7 +603,7 @@ export default function Landing() {
               className="flex items-center gap-1.5 px-3 bg-gray-50 border-r border-gray-100 min-w-[80px] flex-shrink-0 rounded-l-xl hover:bg-gray-100 transition">
               <span className="text-lg">{country.f}</span>
               <span className="text-sm font-sora font-semibold text-ink">{country.d}</span>
-              <span className="text-gray-300 text-xs">▼</span>
+              <span className="text-gray-500 text-xs">▼</span>
             </button>
 
             <input type="tel" value={waPhone}
@@ -586,7 +628,7 @@ export default function Landing() {
                         ${c.c === country.c ? 'bg-blue-50' : ''}`}>
                       <span className="text-base">{c.f}</span>
                       <span className="text-sm text-ink flex-1">{c.n}</span>
-                      <span className="text-xs font-sora font-semibold text-gray-400">{c.d}</span>
+                      <span className="text-xs font-sora font-semibold text-gray-600">{c.d}</span>
                     </button>
                   ))}
                 </div>
@@ -600,10 +642,10 @@ export default function Landing() {
 
           {/* WA Custom slug */}
           <div className="mb-3">
-            <label className="text-xs text-gray-400 mb-1 block">{t.customLabel}</label>
+            <label className="text-xs text-gray-600 mb-1 block">{t.customLabel}</label>
             <div className={`flex items-center bg-white border-2 rounded-xl px-3 py-2 gap-1 transition
               ${waSlugError ? 'border-red-300' : 'border-gray-100 focus-within:border-green-400'}`}>
-              <span className="text-xs text-gray-400 font-mono whitespace-nowrap flex-shrink-0" dir="ltr">
+              <span className="text-xs text-gray-600 font-mono whitespace-nowrap flex-shrink-0" dir="ltr">
                 {APP_URL}/
               </span>
               <input type="text" value={waCustomSlug}
@@ -615,14 +657,14 @@ export default function Landing() {
               ? <p className="text-red-500 text-xs mt-1">{waSlugError}</p>
               : waSlugPreview
                 ? <p className="text-xs text-green-600 mt-1 font-mono" dir="ltr">{waSlugPreview}</p>
-                : <p className="text-xs text-gray-300 mt-1">{t.customNote}</p>
+                : <p className="text-xs text-gray-500 mt-1">{t.customNote}</p>
             }
           </div>
 
-          <button onClick={genWA} disabled={!waPhone.trim()}
+          <button onClick={genWA} disabled={waLoading || !waPhone.trim()}
             className="w-full bg-green-500 text-white font-sora font-bold text-sm py-3.5 rounded-2xl hover:bg-green-600 active:scale-95 transition disabled:opacity-40 flex items-center justify-center gap-2">
             <WAIcon />
-            {t.waGenBtn}
+            {waLoading ? '…' : t.waGenBtn}
           </button>
 
           {/* WA Result */}
@@ -630,7 +672,7 @@ export default function Landing() {
             <div className="bg-green-50 border border-green-100 rounded-2xl px-4 py-3 mt-2 animate-fade-up">
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div>
-                  <p className="text-xs text-gray-400 mb-0.5">{t.yourLink}</p>
+                  <p className="text-xs text-gray-600 mb-0.5">{t.yourLink}</p>
                   <a href={waShortUrl} target="_blank" rel="noreferrer" dir="ltr"
                     className="font-sora font-semibold text-green-700 hover:underline text-sm break-all">
                     {waShortUrl}
@@ -649,7 +691,7 @@ export default function Landing() {
                   {waCopied ? t.copied : t.copyWaLink}
                 </button>
               </div>
-              <p className="text-xs text-gray-400 mt-2" dir="ltr">
+              <p className="text-xs text-gray-600 mt-2" dir="ltr">
                 {t.redirectsTo} <span className="break-all">{waResult.original_url}</span>
               </p>
             </div>
@@ -666,7 +708,7 @@ export default function Landing() {
 
         {/* RIGHT — live phone */}
         <div className="hidden lg:flex flex-col items-center gap-3">
-          <p className="text-xs font-sora font-bold uppercase tracking-widest text-gray-300">{t.prevLbl}</p>
+          <p className="text-xs font-sora font-bold uppercase tracking-widest text-gray-500">{t.prevLbl}</p>
 
           {/* Phone shell */}
           <div className="w-60 h-[500px] bg-gray-900 rounded-[44px] p-2.5 shadow-2xl shadow-gray-900/40"
@@ -709,7 +751,7 @@ export default function Landing() {
               {/* Type bar */}
               <div className="bg-gray-100 border-t border-gray-200 px-2 py-1.5 flex items-center gap-1.5 flex-shrink-0">
                 <div className="flex-1 bg-white rounded-full px-3 py-1.5">
-                  <span className="text-[10px] text-gray-300">{t.typeLabel}</span>
+                  <span className="text-[10px] text-gray-500">{t.typeLabel}</span>
                 </div>
                 <div className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center flex-shrink-0">
                   <span className="text-white text-sm">➤</span>
@@ -718,7 +760,7 @@ export default function Landing() {
             </div>
           </div>
 
-          <p className="text-[11px] text-gray-300 text-center max-w-[200px] leading-relaxed">{t.prevNote}</p>
+          <p className="text-[11px] text-gray-500 text-center max-w-[200px] leading-relaxed">{t.prevNote}</p>
         </div>
       </div>
 
@@ -728,12 +770,12 @@ export default function Landing() {
           <div className="flex items-center gap-4">
             <DropSVG size={36} color="#f59e0b" />
             <div>
-              <h3 className="font-sora font-bold text-ink text-base mb-0.5">{t.qrH}</h3>
-              <p className="text-gray-400 text-sm">{t.qrP}</p>
+              <h2 className="font-sora font-bold text-ink text-base mb-0.5">{t.qrH}</h2>
+              <p className="text-gray-600 text-sm">{t.qrP}</p>
             </div>
           </div>
           <a href="https://qr-it.raztom.com" target="_blank" rel="noreferrer"
-            className="bg-amber-500 text-white font-sora font-semibold px-6 py-2.5 rounded-full text-sm hover:bg-amber-600 transition whitespace-nowrap flex-shrink-0">
+            className="bg-amber-700 text-white font-sora font-semibold px-6 py-2.5 rounded-full text-sm hover:bg-amber-800 transition whitespace-nowrap flex-shrink-0">
             {t.qrBtn}
           </a>
         </div>
@@ -742,16 +784,17 @@ export default function Landing() {
       {/* ── CTA ── */}
       <section className="text-center py-16 px-6">
         <h2 className="font-sora font-bold text-3xl text-ink mb-3">{t.ctaH}</h2>
-        <p className="text-gray-400 mb-7">{t.ctaP}</p>
+        <p className="text-gray-600 mb-7">{t.ctaP}</p>
         <a href="/auth"
           className="inline-block bg-ink text-white font-sora font-semibold px-10 py-4 rounded-full hover:opacity-80 transition text-sm">
           {t.ctaBtn}
         </a>
       </section>
+      </main>
 
       {/* ── FOOTER ── */}
       <footer className="border-t border-gray-100 py-6 px-6">
-        <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-gray-300 flex-wrap gap-3">
+        <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-gray-600 flex-wrap gap-3">
           <a href="/" className="flex items-center gap-2 font-sora font-semibold text-ink">
             <DropSVG size={18} /> Linkdrop
           </a>

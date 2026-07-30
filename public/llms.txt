@@ -1,0 +1,11 @@
+# Linkdrop
+
+Linkdrop is a web tool for creating short links and WhatsApp links, sharing QR codes, and reviewing click analytics for links owned by the signed-in user.
+
+## Primary page
+
+- [Linkdrop](https://linkdrop.raztom.com/): Create and manage short links and WhatsApp links.
+
+## Related tool
+
+- [QR-It](https://qr-it.raztom.com/): Generate QR codes for links.

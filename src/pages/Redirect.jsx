@@ -16,11 +16,18 @@ export default function Redirect() {
   useEffect(() => {
     async function resolve() {
       // 1. מצא את הקישור לפי קוד
-      const { data: link, error: linkErr } = await supabase
-        .from('links')
-        .select('id, original_url, is_whatsapp, wa_phone, wa_message')
-        .eq('short_code', code)
-        .single()
+      let { data: link, error: linkErr } = await supabase
+        .rpc('resolve_link', { p_short_code: code })
+        .maybeSingle()
+
+      // Backward-compatible fallback until the production SQL migration is applied.
+      if (linkErr) {
+        ;({ data: link, error: linkErr } = await supabase
+          .from('links')
+          .select('id, original_url, is_whatsapp, wa_phone, wa_message')
+          .eq('short_code', code)
+          .maybeSingle())
+      }
 
       if (linkErr || !link) {
         setError(true)
